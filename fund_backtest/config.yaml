@@ -1,0 +1,44 @@
+# 基金网格回测配置文件
+
+# 基金代码
+fund_code: "159952"  # 广发创业板ETF
+fund_name: "广发创业板ETF"
+
+# 网格参数
+grid:
+  # 网格数量（上格和下格之间有多少个网格）
+  grid_count: 20
+  # 网格间距（百分比）
+  grid_spacing: 0.02  # 2%
+  # 初始投入资金
+  initial_capital: 100000
+
+# 回测时间范围
+backtest:
+  start_date: "2022-01-01"
+  end_date: "2026-03-21"
+
+# 网格交易规则
+trading_rules:
+  # 买入折扣（低于网格价格买入时给予折扣）
+  buy_discount: 0.98
+  # 卖出溢价（高于网格价格卖出时给予溢价）
+  sell_premium: 1.02
+  # 最小交易金额（避免频繁小额交易）
+  min_trade_amount: 500
+
+# 手续费设置
+fees:
+  # 买入手续费率
+  buy_fee_rate: 0.0005  # 0.05%
+  # 卖出手续费率
+  sell_fee_rate: 0.0005  # 0.05%
+  # 印花税（仅卖出收取，A股为0.1%）
+  stamp_duty_rate: 0.001
+
+# 风险控制
+risk_control:
+  # 单次最大持仓比例
+  max_position_ratio: 0.8
+  # 最大回撤止损
+  max_drawdown_stop_loss: 0.15

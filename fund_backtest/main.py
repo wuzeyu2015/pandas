@@ -61,16 +61,32 @@ def main():
     # 1. 获取数据
     print("步骤 1: 获取数据...")
     try: 
-        df =jqdatasdk.get_price(fund_code, start_date= '2025-10-25', end_date='2025-12-24 15:00:00',
-                                fq='post', frequency='1m',
-                                fields=['open','close','low','high'],
-                                round=False)
+        # df =jqdatasdk.get_price(fund_code, start_date= '2025-10-25', end_date='2025-12-24 15:00:00',
+        #                         fq='post', frequency='1m',
+        #                         fields=['open','close','low','high'],
+        #                         round=False)
+        df = ak.stock_zh_a_minute(
+            symbol='sz159952',
+            period=3,
+            adjust=""
+        )
         if df is None or df.empty:
             return None
-        # 添加基金代码列
-        df['fund_code'] = fund_code
-        df = df.reset_index()
-        df = df.rename(columns={'index': 'date'})
+        
+        df['open'] = df['open'].astype(float)
+        df['close'] = df['close'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+
+        # print(df)
+        df = df.rename(columns={'day': 'date'})
+        df['date'] = pd.to_datetime(df['date'])
+        # print(df)
+
+        # print(df)
+        # df = df.reset_index()
+        # print(df)
+        # df = df.rename(columns={'index': 'date'})
         # print(df)
 
     except Exception as e:
@@ -85,15 +101,8 @@ def main():
 
     # 3. 运行回测
     print("\n步骤 3: 运行回测...")
-    results = backtest.run_backtest(df)
+    backtest.run_backtest(df)
 
-    # 4. 显示结果
-    print("\n步骤 4: 显示结果...")
-    # visualizer = BacktestVisualizer(results)
-    # visualizer.print_trade_summary()
-    # print(visualizer.generate_summary_report())
-    # print(results)
-    return 0
 
 
 if __name__ == '__main__':

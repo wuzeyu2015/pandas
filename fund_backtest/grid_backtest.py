@@ -11,11 +11,11 @@ class GridBacktest:
     def __init__(self,
                  fund_code: str,
                  available: float = 24000.0,
-                 position: int = 15000,
+                 position: int = 0,
                  position_max: int = 150000,
                  position_min: int = 0,
                  grid_size: float = 0.050,
-                 trade_shares: int = 15000):
+                 trade_shares: int = 5000):
         """
         初始化网格回测引擎
 
@@ -127,16 +127,20 @@ class GridBacktest:
         print(f"初始基准价: {self.base_price:.3f}元")
         print(f"格子大小: {self.grid_size:.4f} 元 ")
         print(f"交易份数: {self.trade_shares} 份")
-        print(f"回测周期: {df['date'].iloc[0]} 至 {df['date'].iloc[-1]}")
+        print(f"回测周期: {df.index[0]} 至 {df.index[-1]}")
         print(f"{'='*60}\n")
 
 
-        df['is_last_minute_of_day'] = df.groupby(df['date'].dt.date)['date'].transform('last') == df['date']
+        # 标记每天最后一分钟
+        df['is_last_minute_of_day'] = (
+            df.groupby(df.index.date)['close']
+            .transform('last')
+            .eq(df['close'])
+        )
         # 遍历每一分钟行情
-        for idx in range(0, len(df)):
+        for idx, row in df.iterrows():
             
-            row = df.iloc[idx]
-            date = row['date']
+            date = idx
             close = row['close']
             self.end_price = close
 
@@ -159,6 +163,9 @@ class GridBacktest:
 
         print(f"最大持仓量: {self.max_positon}")
         print(f"最大持仓成本: {self.total_input - self.min_available:,.2f} 元")
+        print(f"余额: {self.available}")
+        print(f"盘尾价格: {self.end_price}")
+        print(f"盘尾持仓: {self.position}")
         print(f"最终资产: {total_output:,.2f} 元")
         print(f"持仓单股成本: {self.average_position_cost:,.2f} 元")
         print(f"网格累计收益: {total_output - self.total_input:,.2f} 元")

@@ -553,13 +553,13 @@ if __name__ == '__main__':
     #             self.buy()
     #         elif self.sma_fast[0] < self.sma_slow[0] and self.position:
     #             self.sell()
-    #
-    # 你可以这样调用：
+    
+    # # 你可以这样调用：
     # run_backtest(
     #     strategy_class=DualMAStrategy,
-    #     code='510300',
-    #     start='20240101',
-    #     end='20241231',
+    #     code='159952',
+    #     start='20251023',
+    #     end='20251119',
     #     fast_period=5,
     #     slow_period=20
     # )

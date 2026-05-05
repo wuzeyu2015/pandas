@@ -210,7 +210,7 @@ class GridStrategy(bt.Strategy):
         self._execute_grid_trading(is_open_session=False)
         
         # 4. 盘尾更新基准价
-        # self._update_base_price_at_end_of_day()
+        self._update_base_price_at_end_of_day()
     
     def _initialize_base_price(self):
         """
@@ -404,91 +404,162 @@ class GridStrategy(bt.Strategy):
         self.log('='*60, doprint=True)
 
 
-def run_backtest(code, start, end, 
-                 grid_size, trade_shares, 
-                 position_max, position_min,
-                 initial_cash):
+def run_backtest(
+    strategy_class,
+    code, 
+    start, 
+    end,
+    frequency='1m',
+    initial_cash=100000,
+    commission=0.0005,
+    **strategy_kwargs
+):
     """
-    运行网格策略回测
+    通用回测引擎 - 支持任意策略
     
     Args:
+        strategy_class: 策略类（如 GridStrategy, MovingAverageStrategy 等）
         code: 股票代码
-        start: 开始日期
-        end: 结束日期
-        grid_size: 【格子大小】每个网格的价格间距（元）
-        trade_shares: 【每格股数】每次买入/卖出的份额
-        position_max: 【仓位上限】最大持仓
-        position_min: 【仓位下限】最小持仓
-        initial_cash: 初始资金（由Backtrader管理）
+        start: 开始日期（格式：'YYYYMMDD' 或 'YYYY-MM-DD'）
+        end: 结束日期（格式：'YYYYMMDD' 或 'YYYY-MM-DD'）
+        frequency: 数据频率，默认'1m'（1分钟线）
+        initial_cash: 初始资金，默认10万
+        commission: 佣金费率，默认0.05%
+        **strategy_kwargs: 策略参数（根据具体策略传入）
+    
+    Returns:
+        results: 回测结果列表
+        cerebro: Cerebro引擎实例
+    
+    Example:
+        # 网格策略
+        run_backtest(
+            GridStrategy,
+            '159952',
+            '20251023',
+            '20251119',
+            grid_size=0.05,
+            trade_shares=5000,
+            position_max=150000,
+            position_min=0
+        )
+        
+        # 双均线策略
+        run_backtest(
+            DualMAStrategy,
+            '510300',
+            '20240101',
+            '20241231',
+            fast_period=5,
+            slow_period=20
+        )
     """
     try:
-        # 获取数据
-        print(f"\n{'='*60}")
-        print("🕸️  网格交易策略回测")
-        print(f"{'='*60}")
-        print(f"标的代码: {code}")
-        print(f"时间范围: {start} 至 {end}")
-        print(f"{'='*60}\n")
+        # 1. 获取数据
+        print(f"\n{'='*70}")
+        print(f"🚀 Backtrader 回测引擎")
+        print(f"{'='*70}")
+        print(f"📊 标的代码: {code}")
+        print(f"📅 时间范围: {start} 至 {end}")
+        print(f"⏱️  数据频率: {frequency}")
+        print(f"💰 初始资金: {initial_cash:,.2f} 元")
+        print(f"📈 佣金费率: {commission*100:.2f}%")
+        print(f"🔧 策略类型: {strategy_class.__name__}")
+        if strategy_kwargs:
+            print(f"⚙️  策略参数: {strategy_kwargs}")
+        print(f"{'='*70}\n")
         
-        data = GetStockDatApi(code, start, end,frequency='1m')
+        data = GetStockDatApi(code, start, end, frequency)
         if data.empty:
             print("⚠️  警告: 未获取到数据，无法进行回测")
-            return
+            return None, None
         
-        # 创建Cerebro引擎（标准模式，不使用cheat_on_open）
+        # 2. 创建Cerebro引擎
         cerebro = bt.Cerebro()
         
-        # 添加数据
+        # 3. 添加数据
         data_feed = bt.feeds.PandasData(dataname=data)
         cerebro.adddata(data_feed)
         
-        # 添加策略 - 传入三个核心控制参数
-        cerebro.addstrategy(GridStrategy,
-                           grid_size=grid_size,         # 格子大小
-                           trade_shares=trade_shares,   # 每格股数
-                           position_max=position_max,   # 仓位上限
-                           position_min=position_min)   # 仓位下限
+        # 4. 添加策略（传入策略参数）
+        cerebro.addstrategy(strategy_class, **strategy_kwargs)
         
-        # 【重要】设置初始资金 - 这是Backtrader管理的唯一资金来源
+        # 5. 设置初始资金
         cerebro.broker.setcash(initial_cash)
         
-        # 设置佣金
-        # cerebro.broker.setcommission(commission=0.0003)
+        # 6. 设置佣金
+        cerebro.broker.setcommission(commission=commission)
         
-        # 打印初始状态
-        print(f'💰 初始资金: {cerebro.broker.getvalue():,.2f} 元\n')
+        # 7. 打印初始状态
+        print(f'💼 初始总资产: {cerebro.broker.getvalue():,.2f} 元\n')
         
-        # 运行回测
+        # 8. 运行回测
+        print("⏳ 回测进行中...\n")
         results = cerebro.run()
-        strat = results[0]
         
-        # 打印最终状态
-        print(f'\n💵 最终资产: {cerebro.broker.getvalue():,.2f} 元')
-        print(f'📈 收益率: {(cerebro.broker.getvalue() - initial_cash) / initial_cash * 100:.2f}%\n')
+        # 9. 打印最终结果
+        final_value = cerebro.broker.getvalue()
+        final_cash = cerebro.broker.getcash()
+        profit = final_value - initial_cash
+        profit_rate = (profit / initial_cash) * 100
+        
+        print(f"\n{'='*70}")
+        print(f"✅ 回测完成")
+        print(f"{'='*70}")
+        print(f'💵 最终总资产: {final_value:,.2f} 元')
+        print(f'💰 最终现金: {final_cash:,.2f} 元')
+        print(f'📊 总收益: {profit:+,.2f} 元 ({profit_rate:+.2f}%)')
+        print(f"{'='*70}\n")
+        
+        return results, cerebro
         
     except Exception as e:
-        print(f"回测失败: {e}")
+        print(f"\n❌ 回测失败: {e}")
         import traceback
         traceback.print_exc()
+        return None, None
 
 
 if __name__ == '__main__':
-    # === 配置示例：三个核心参数的使用 ===
+    # === 示例1：网格策略回测 ===
+    print("\n" + "="*70)
+    print("示例1：网格交易策略")
+    print("="*70)
+    
     run_backtest(
+        strategy_class=GridStrategy,  # 传入策略类
         code='159952',
         start='20251023',
         end='20251119',
+        frequency='15m',
+        initial_cash=24000,
         
-        # 【控制1】每个格子多大：0.05元
+        # 网格策略专属参数
         grid_size=0.05,
-        
-        # 【控制2】每格买入多少股：5000股
         trade_shares=5000,
-        
-        # 【控制3】仓位控制：最少0股，最多150000股
-        position_min=0,
         position_max=150000,
-        
-        # 初始资金（Backtrader管理）
-        initial_cash=24000
+        position_min=0
     )
+    
+    # === 示例2：如何添加新策略 ===
+    # 假设你有一个双均线策略：
+    # class DualMAStrategy(bt.Strategy):
+    #     params = (('fast_period', 5), ('slow_period', 20))
+    #     def __init__(self):
+    #         self.sma_fast = bt.indicators.SMA(period=self.params.fast_period)
+    #         self.sma_slow = bt.indicators.SMA(period=self.params.slow_period)
+    #     def next(self):
+    #         if self.sma_fast[0] > self.sma_slow[0] and not self.position:
+    #             self.buy()
+    #         elif self.sma_fast[0] < self.sma_slow[0] and self.position:
+    #             self.sell()
+    #
+    # 你可以这样调用：
+    # run_backtest(
+    #     strategy_class=DualMAStrategy,
+    #     code='510300',
+    #     start='20240101',
+    #     end='20241231',
+    #     fast_period=5,
+    #     slow_period=20
+    # )

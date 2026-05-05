@@ -1,3 +1,5 @@
+import datetime
+
 import backtrader as bt
 import jqdatasdk
 import pandas as pd
@@ -21,7 +23,7 @@ JQ_PASS = os.getenv('JQ_PASS', '306116315yY')
 jqdatasdk.auth(JQ_USER, JQ_PASS)
 
 
-def GetStockDatApi(code, start='20240101', end='20240419', frequency='15m'):
+def GetStockDatApi(code, start, end, frequency):
     """
     获取股票/基金数据并格式化为 Backtrader 可用的格式
     
@@ -91,7 +93,7 @@ def GetStockDatApi(code, start='20240101', end='20240419', frequency='15m'):
 
 class GridStrategy(bt.Strategy):
     """
-    网格交易策略 - 移动基准价版本（完全使用Backtrader内部管理）
+    网格交易策略 - 移动基准价版本
     
     核心逻辑：
     1. 设置初始基准价和格子大小
@@ -107,13 +109,37 @@ class GridStrategy(bt.Strategy):
     
     params = (
         ('grid_size', None),           # 【格子大小】每个网格的价格间距（元）
-        ('trade_shares', None),       # 【每格股数】每次买入/卖出的固定份额
-        ('position_max', None),      # 【仓位上限】最大持仓限制（股数）
-        ('position_min', None),           # 【仓位下限】最小持仓限制（股数）
+        ('trade_shares', None),        # 【每格股数】每次买入/卖出的固定份额
+        ('position_max', None),        # 【仓位上限】最大持仓限制（股数）
+        ('position_min', None),        # 【仓位下限】最小持仓限制（股数）
     )
     
     def __init__(self):
-        # 验证必需参数是否提供
+        """初始化策略参数和状态变量"""
+        # 验证必需参数
+        self._validate_params()
+        
+        # 数据引用
+        self.dataclose = self.datas[0].close
+        self.dataopen = self.datas[0].open
+        
+        # 订单管理
+        self.order = None
+        
+        # 网格核心状态
+        self.base_price = None
+        
+        # 统计信息
+        self.buys = 0
+        self.sells = 0
+        self.first_day_open = None
+        self.last_day_close = None
+
+        
+        # 交易历史（用于绘图）
+        self.trade_history = []
+    def _validate_params(self):
+        """验证策略参数完整性"""
         if self.params.grid_size is None:
             raise ValueError("必须指定 grid_size 参数（格子大小）")
         if self.params.trade_shares is None:
@@ -122,52 +148,34 @@ class GridStrategy(bt.Strategy):
             raise ValueError("必须指定 position_max 参数（最大持仓）")
         if self.params.position_min is None:
             raise ValueError("必须指定 position_min 参数（最小持仓）")
-        
-        # 价格数据
-        self.dataclose = self.datas[0].close
-        self.dataopen = self.datas[0].open
-        
-        # 订单管理
-        self.order = None
-        
-        # 网格策略核心状态
-        self.base_price = None           # 基准价（网格中心价格）
-        
-        # 统计信息
-        self.buys = 0                    # 买入次数
-        self.sells = 0                   # 卖出次数
-        self.first_day_open = None       # 首日开盘价
-        self.last_day_close = None       # 最后一日收盘价
-        
-        # 日期跟踪
-        self.current_date = None
-        self.last_close_of_day = None
-        
-        # 交易历史（用于绘图）
-        self.trade_history = []          # [(datetime, price, type, base_price), ...]
-        self.base_price_history = []     # [(datetime, base_price), ...]
     
     def log(self, txt, dt=None, doprint=False):
-        """日志函数"""
+        """日志输出函数"""
         if doprint:
             dt = dt or self.datas[0].datetime.datetime(0)
             print('%s, %s' % (dt.strftime('%Y-%m-%d %H:%M'), txt))
 
     def notify_order(self, order):
-        """订单状态通知 - Backtrader自动调用"""
+        """订单状态通知（静默处理，仅计数）"""
         if order.status in [order.Submitted, order.Accepted]:
             return
         
         if order.status in [order.Completed]:
             if order.isbuy():
                 self.buys += 1
-                # 使用统一的计数器，并标注这是实际成交价格
-                self.log(f'✅ 买入成交 #{self.buys}: {order.executed.size:.0f}股 @ {order.executed.price:.3f}元 (成交价)', 
-                        doprint=True)
+                self.log(
+                    f'✅ 买入成交 | 价格: {order.executed.price:.3f} | '
+                    f'数量: {order.executed.size} | '
+                    f'金额: {order.executed.value:.2f}',
+                    doprint=True)
             else:
                 self.sells += 1
-                self.log(f'✅ 卖出成交 #{self.sells}: {order.executed.size:.0f}股 @ {order.executed.price:.3f}元 (成交价)', 
-                        doprint=True)
+                self.log(
+                    f'✅ 卖出成交 | 价格: {order.executed.price:.3f} | '
+                    f'数量: {order.executed.size} | '
+                    f'金额: {order.executed.value:.2f}',
+                    doprint=True
+                    )
         
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             self.log('❌ 订单取消/保证金不足/拒绝', doprint=True)
@@ -180,180 +188,219 @@ class GridStrategy(bt.Strategy):
             return
         self.log(f'💰 交易利润: 毛利润 {trade.pnl:.2f}, 净利润 {trade.pnlcomm:.2f}', doprint=True)
 
+    
     def next(self):
         """
-        每个bar的执行逻辑 - 核心交易逻辑
+        每个Bar执行（标准模式）
         
-        === 关键改进：使用 while 循环处理跨格行情 ===
-        当价格大幅波动跨越多个格子时，在同一时间点连续执行多次交易
-        确保基准价能快速追赶市场价格，避免滞后
-        
-        === 使用Backtrader内部状态 ===
-        - self.broker.getcash(): 获取真实现金余额
-        - self.position.size: 获取真实持仓数量
-        - self.dataclose[0]: 当前收盘价
+        职责：
+        - 初始化基准价（首个Bar）
+        - 检测交易信号并提交订单
+        - 盘尾更新基准价
+        - 记录每日基准价历史
         """
-        current_dt = self.datas[0].datetime.datetime(0)
-        current_date = current_dt.date()
-        close = self.dataclose[0]
-        open_price = self.dataopen[0]
+        # 1. 初始化基准价（仅在第一个bar执行）
+        self._initialize_base_price()
         
-        # === 第一步：初始化基准价（只在第一天执行）===
-        if self.base_price is None:
-            self.base_price = open_price
-            self.first_day_open = open_price
-            
-            # 使用Backtrader内部状态获取真实资金和持仓
-            real_cash = self.broker.getcash()
-            real_position = self.position.size
-            
-            self.log('='*60, doprint=True)
-            self.log('🎯 网格策略启动', doprint=True)
-            self.log(f'💰 真实账户余额: {real_cash:,.2f} 元', doprint=True)
-            self.log(f'📊 真实持仓: {real_position} 股', doprint=True)
-            self.log(f'🎯 初始基准价: {self.base_price:.3f}元', doprint=True)
-            self.log(f'📏 格子大小: {self.params.grid_size:.4f} 元', doprint=True)
-            self.log(f'📦 每格交易: {self.params.trade_shares} 股', doprint=True)
-            self.log(f'⚖️  仓位限制: [{self.params.position_min}, {self.params.position_max}]', doprint=True)
-            self.log('='*60, doprint=True)
-            return
-        
-        # === 第二步：检测是否是新的一天，盘尾更新基准价 ===
-        is_new_day = (current_date != self.current_date)
-        if is_new_day and self.current_date is not None:
-            # 每天收盘后，将基准价更新为前一天收盘价
-            if self.last_close_of_day is not None:
-                old_base = self.base_price
-                self.base_price = self.last_close_of_day
-                self.log(f'📅 盘尾更新基准价: {old_base:.3f} -> {self.base_price:.3f}', doprint=True)
-                
-                # 记录基准价变化
-                self.base_price_history.append((current_dt - pd.Timedelta(days=1), self.last_close_of_day))
-        
-        self.current_date = current_date
-        self.last_close_of_day = close
-        
-        # 每天记录基准价
-        self.base_price_history.append((current_dt, self.base_price))
-        
-        # === 第三步：如果有未完成订单，等待 ===
+        # 2. 检查是否有未完成订单
         if self.order:
             return
         
-        # === 第四步：使用 while 循环处理跨格行情 ===
-        # 核心思想：只要价格还在触发线外，就持续交易并更新基准价
-        # 这样可以在一个时间点内完成多次买卖，快速追平价格差距
+        # 3. 执行网格交易逻辑（使用收盘价决策）
+        self._execute_grid_trading(is_open_session=False)
         
-        trades_executed = 0  # 记录本次执行的交易次数
-        max_trades_per_bar = 100  # 防止死循环的安全上限
+        # 4. 盘尾更新基准价
+        # self._update_base_price_at_end_of_day()
+    
+    def _initialize_base_price(self):
+        """
+        初始化基准价（仅在第一个bar执行）
+        
+        Returns:
+            bool: True表示已初始化，False表示无需初始化
+        """
+        if self.base_price is not None:
+            # 已经初始化过了，跳过
+            return False
+        
+        current_dt = self.datas[0].datetime.datetime(0)
+        open_price = self.dataopen[0]
+        # 🔍 调试日志：显示当前是哪个时间点
+        self.log(f'🔍 [DEBUG] 初始化基准价 - 时间: {current_dt}, 开盘价: {open_price:.3f}', doprint=True)
+        
+        self.base_price = open_price
+        
+        real_cash = self.broker.getcash()
+        real_position = self.position.size
+        
+        self.log('='*60, doprint=True)
+        self.log('🎯 网格策略启动', doprint=True)
+        self.log(f'💰 真实账户余额: {real_cash:,.2f} 元', doprint=True)
+        self.log(f'📊 真实持仓: {real_position} 股', doprint=True)
+        self.log(f'🎯 初始基准价: {self.base_price:.3f}元', doprint=True)
+        self.log(f'📏 格子大小: {self.params.grid_size:.4f} 元', doprint=True)
+        self.log(f'📦 每格交易: {self.params.trade_shares} 股', doprint=True)
+        self.log(f'⚖️  仓位限制: [{self.params.position_min}, {self.params.position_max}]', doprint=True)
+        self.log('='*60, doprint=True)
+
+        return True
+    
+    def _update_base_price_at_end_of_day(self):
+        """
+        盘尾更新基准价为当日收盘价
+        """
+        # 如果基准价尚未初始化，跳过更新
+        if self.base_price is None:
+            return
+        
+        close = self.dataclose[0]
+        # 检测是当天最后一个bar
+        bar_end_time = bt.num2date(self.datas[0].datetime[0])
+        market_close = datetime.time(15, 0)
+        if bar_end_time.time() == market_close:
+            self.log(f"{bar_end_time.date()} 当天最后一个 15min bar")
+            old_base = self.base_price
+            self.base_price = close
+            self.log(f'📅 盘尾更新基准价: {old_base:.3f} -> {self.base_price:.3f}', doprint=True)
+
+        
+        
+    
+    def _execute_grid_trading(self, is_open_session=True):
+        """
+        执行网格交易逻辑（while循环处理跨格行情）
+        
+        Args:
+            price: 决策价格（开盘价或收盘价）
+            current_dt: 当前时间戳
+            is_open_session: 是否为开盘时段
+        """
+        # 防御性检查：如果基准价未初始化，不执行交易
+        if self.base_price is None:
+            return
+        price = self.dataclose[0]
+        current_dt = self.datas[0].datetime.datetime(0)
+        trades_executed = 0
+        max_trades_per_bar = 100  # 防止死循环
         
         while trades_executed < max_trades_per_bar:
-            # 重新计算触发价格（因为基准价可能在循环中被更新）
-            buy_trigger = self.base_price - self.params.grid_size   # 买入触发价
-            sell_trigger = self.base_price + self.params.grid_size  # 卖出触发价
+            # 计算触发价格
+            buy_trigger = self.base_price - self.params.grid_size
+            sell_trigger = self.base_price + self.params.grid_size
             
-            # 【优先检查买入】
-            if close <= buy_trigger:
-                # 【仓位控制1】检查当前真实持仓是否达到上限
-                current_position = self.position.size
-                if current_position >= self.params.position_max:
-                    if trades_executed == 0:  # 只在第一次尝试时打印警告
-                        self.log(f'⚠️  持仓已达上限 ({current_position}股)，无法买入', doprint=True)
-                    break  # 退出 while 循环
-                
-                # 【资金控制】检查Backtrader中的真实现金是否足够
-                cash_needed = self.params.trade_shares * buy_trigger
-                real_cash = self.broker.getcash()
-                
-                if cash_needed > real_cash:
-                    if trades_executed == 0:
-                        self.log(f'⚠️  资金不足 (需要{cash_needed:.2f}元，可用{real_cash:.2f}元)', doprint=True)
-                    break  # 退出 while 循环
-                
-                # 执行买入 - 使用市价单立即成交
-                # 注意：不传 price 参数即为市价单，Backtrader会在当前bar结束时撮合
-                self.order = self.buy(size=self.params.trade_shares)
-                
-                # 更新基准价为触发价（策略逻辑基于触发价，而非实际成交价）
-                old_base = self.base_price
-                self.base_price = buy_trigger
-                self.log(f'📉 买入信号 #{trades_executed+1}！触发价: {buy_trigger:.3f}, 基准价: {old_base:.3f} -> {self.base_price:.3f} (等待成交...)', doprint=True)
-                
-                # 记录交易历史
-                self.trade_history.append((current_dt, buy_trigger, 'BUY', self.base_price))
-                trades_executed += 1
-                
-                # ⚠️ 重要：由于Backtrader订单是异步的，我们需要立即模拟持仓变化
-                # 这样下一次循环判断时能基于最新的持仓状态
-                # （实际成交会在 notify_order 中确认）
+            # 检查买入条件
+            if price <= buy_trigger:
+                if self._execute_buy(price, buy_trigger, current_dt, trades_executed):
+                    trades_executed += 1
+                else:
+                    break
             
-            # 【否则检查卖出】
-            elif close >= sell_trigger:
-                # 【仓位控制2】检查当前真实持仓是否足够卖出
-                current_position = self.position.size
-                if current_position < self.params.trade_shares:
-                    if trades_executed == 0:
-                        self.log(f'⚠️  持仓不足 ({current_position}股 < {self.params.trade_shares}股)，无法卖出', doprint=True)
-                    break  # 退出 while 循环
-                
-                # 【仓位控制3】检查卖出后是否会低于最小持仓
-                if current_position - self.params.trade_shares < self.params.position_min:
-                    if trades_executed == 0:
-                        self.log(f'⚠️  卖出后将低于最小持仓限制', doprint=True)
-                    break  # 退出 while 循环
-                
-                # 执行卖出 - 使用市价单立即成交
-                # 注意：不传 price 参数即为市价单，Backtrader会在当前bar结束时撮合
-                self.order = self.sell(size=self.params.trade_shares)
-                
-                # 更新基准价为触发价（策略逻辑基于触发价，而非实际成交价）
-                old_base = self.base_price
-                self.base_price = sell_trigger
-                self.log(f'📈 卖出信号 #{trades_executed+1}！触发价: {sell_trigger:.3f}, 基准价: {old_base:.3f} -> {self.base_price:.3f} (等待成交...)', doprint=True)
-                
-                # 记录交易历史
-                self.trade_history.append((current_dt, sell_trigger, 'SELL', self.base_price))
-                trades_executed += 1
+            # 检查卖出条件
+            elif price >= sell_trigger:
+                if self._execute_sell(price, sell_trigger, current_dt, trades_executed):
+                    trades_executed += 1
+                else:
+                    break
             
-            # 【价格在一个格子内，无需交易】
+            # 价格在格子内，退出循环
             else:
-                break  # 退出 while 循环
+                break
         
-        # 如果执行了多次交易，打印汇总信息
+        # 打印多次交易汇总
         if trades_executed > 1:
-            self.log(f'🔄 本时间点共执行 {trades_executed} 次交易，基准价已追平至 {self.base_price:.3f}', doprint=True)
+            session_type = "开盘" if is_open_session else "收盘"
+            self.log(f'🔄 {session_type}共执行 {trades_executed} 次交易，基准价追平至 {self.base_price:.3f}', doprint=True)
+    
+    def _execute_buy(self, current_price, buy_trigger, current_dt, trade_index):
+        """
+        执行买入操作
+        
+        Returns:
+            bool: True表示成功执行，False表示无法执行
+        """
+        current_position = self.position.size
+        
+        # 检查持仓上限
+        if current_position >= self.params.position_max:
+            if trade_index == 0:
+                self.log(f'⚠️  持仓已达上限 ({current_position}股)，无法买入', doprint=True)
+            return False
+        
+        # 检查资金充足性
+        cash_needed = self.params.trade_shares * buy_trigger
+        real_cash = self.broker.getcash()
+        
+        if cash_needed > real_cash:
+            if trade_index == 0:
+                self.log(f'⚠️  资金不足 (需要{cash_needed:.2f}元，可用{real_cash:.2f}元)', doprint=True)
+            return False
+        
+        # 提交买入订单
+        self.order = self.buy(size=self.params.trade_shares)
+        
+        # 更新基准价
+        old_base = self.base_price
+        self.base_price = buy_trigger
+        self.log(f'📉 买入 #{trade_index+1}！触发价: {buy_trigger:.3f}, 更新基准价: {old_base:.3f} -> {self.base_price:.3f}', doprint=True)
+        
+        # 记录交易历史
+        self.trade_history.append((current_dt, buy_trigger, 'BUY', self.base_price))
+        
+        return True
+    
+    def _execute_sell(self, current_price, sell_trigger, current_dt, trade_index):
+        """
+        执行卖出操作
+        
+        Returns:
+            bool: True表示成功执行，False表示无法执行
+        """
+        current_position = self.position.size
+        
+        # 检查持仓充足性
+        if current_position < self.params.trade_shares:
+            if trade_index == 0:
+                self.log(f'⚠️  持仓不足 ({current_position}股 < {self.params.trade_shares}股)，无法卖出', doprint=True)
+            return False
+        
+        # 检查最小持仓限制
+        if current_position - self.params.trade_shares < self.params.position_min:
+            if trade_index == 0:
+                self.log(f'⚠️  卖出后将低于最小持仓限制', doprint=True)
+            return False
+        
+        # 提交卖出订单
+        self.order = self.sell(size=self.params.trade_shares)
+        
+        # 更新基准价
+        old_base = self.base_price
+        self.base_price = sell_trigger
+        self.log(f'📈 卖出 #{trade_index+1}！触发价: {sell_trigger:.3f}, 更新基准价: {old_base:.3f} -> {self.base_price:.3f}', doprint=True)
+        
+        # 记录交易历史
+        self.trade_history.append((current_dt, sell_trigger, 'SELL', self.base_price))
+        
+        return True
 
     def stop(self):
-        """回测结束时的统计"""
+        """回测结束时的统计汇总"""
         self.log('='*60, doprint=True)
         self.log('📊 网格策略回测结果', doprint=True)
         self.log('='*60, doprint=True)
         
-        # 使用Backtrader内部状态获取最终结果
+        # 获取最终状态
         final_cash = self.broker.getcash()
         final_position = self.position.size
         final_value = self.broker.getvalue()
-        
-        # 获取最终收盘价（最后一个bar的收盘价）
         final_close_price = self.dataclose[0]
         
+        # 输出统计信息
         self.log(f'💰 最终账户余额: {final_cash:,.2f} 元', doprint=True)
         self.log(f'📊 最终持仓数量: {final_position} 股', doprint=True)
         self.log(f'📈 最终收盘价格: {final_close_price:.3f} 元', doprint=True)
         self.log(f'💵 总资产价值: {final_value:,.2f} 元', doprint=True)
         self.log(f'📈 买入次数: {self.buys}', doprint=True)
         self.log(f'📉 卖出次数: {self.sells}', doprint=True)
-        
-        if self.first_day_open:
-            self.log(f'🎯 首日开盘价: {self.first_day_open:.3f} 元', doprint=True)
-        if self.last_day_close:
-            self.log(f'🎯 最后一日收盘价: {self.last_day_close:.3f} 元', doprint=True)
-        
-        # 计算收益率
-        if hasattr(self, 'first_day_open') and self.first_day_open:
-            buy_and_hold_return = (final_close_price - self.first_day_open) / self.first_day_open * 100
-            self.log(f'📊 持有到期收益率: {buy_and_hold_return:.2f}%', doprint=True)
-        
         self.log('='*60, doprint=True)
 
 
@@ -383,14 +430,14 @@ def run_backtest(code, start, end,
         print(f"时间范围: {start} 至 {end}")
         print(f"{'='*60}\n")
         
-        data = GetStockDatApi(code, start, end,frequency='15m')
+        data = GetStockDatApi(code, start, end,frequency='1m')
         if data.empty:
             print("⚠️  警告: 未获取到数据，无法进行回测")
             return
         
-        # 创建Cerebro引擎
+        # 创建Cerebro引擎（标准模式，不使用cheat_on_open）
         cerebro = bt.Cerebro()
-        # cerebro = bt.Cerebro(cheat_on_open=True)
+        
         # 添加数据
         data_feed = bt.feeds.PandasData(dataname=data)
         cerebro.adddata(data_feed)

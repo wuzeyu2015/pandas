@@ -137,6 +137,7 @@ class GridBacktest:
             .transform('last')
             .eq(df['close'])
         )
+        # print(df.to_markdown())
         # 遍历每一分钟行情
         for idx, row in df.iterrows():
             
@@ -149,9 +150,9 @@ class GridBacktest:
             # 更新持仓成本价
             self.average_position_cost = (self.total_input - self.available) / self.position
             # 每天收盘价强制更新基准价
-            if row['is_last_minute_of_day']:
-                self.base_price = close
-                print(f"盘尾更新基准价: {self.base_price}----------------------------------------") 
+            # if row['is_last_minute_of_day']:
+            #     self.base_price = close
+            #     print(f"盘尾更新基准价: {self.base_price}----------------------------------------") 
 
 
         print(f"\n{'='*60}")

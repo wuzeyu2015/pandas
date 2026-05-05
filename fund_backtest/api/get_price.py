@@ -1,6 +1,6 @@
 import jqdatasdk
 jqdatasdk.auth('18380280516', '306116315yY')
-df =jqdatasdk.get_price("159952.XSHE", start_date= '2025-10-25', end_date='2025-12-24 15:00:00',
+df =jqdatasdk.get_price("159952.XSHE", start_date= '2025-10-23', end_date='2025-11-19 15:00:00',
                                 fq='post', frequency='1m',
                                 fields=['open','close','low','high'],
                                 round=False)# df = df.reset_index()

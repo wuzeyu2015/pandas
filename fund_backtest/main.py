@@ -49,7 +49,7 @@ def main():
         else:
             code = code
         df =jqdatasdk.get_price(code, start_date= '20251023', end_date='20251119',
-                                fq='post', frequency='15m',
+                                fq='post', frequency='1m',
                                 fields=['open','close','low','high', 'volume'],
                                 round=False)
         if df.empty:

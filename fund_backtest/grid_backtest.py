@@ -14,7 +14,7 @@ class GridBacktest:
                  position: int = 0,
                  position_max: int = 150000,
                  position_min: int = 0,
-                 grid_size: float = 0.050,
+                 grid_size: float = 0.013,
                  trade_shares: int = 5000):
         """
         初始化网格回测引擎
@@ -150,9 +150,9 @@ class GridBacktest:
             # 更新持仓成本价
             self.average_position_cost = (self.total_input - self.available) / self.position
             # 每天收盘价强制更新基准价
-            # if row['is_last_minute_of_day']:
-            #     self.base_price = close
-            #     print(f"盘尾更新基准价: {self.base_price}----------------------------------------") 
+            if row['is_last_minute_of_day']:
+                self.base_price = close
+                print(f"盘尾更新基准价: {self.base_price}----------------------------------------") 
 
 
         print(f"\n{'='*60}")

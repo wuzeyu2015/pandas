@@ -23,18 +23,14 @@ class SimpleStrategy(bt.Strategy):
         """
         在 cheat_on_open=True 模式下，这个方法会在 next() 之后调用
         使用当前Bar的开盘价进行交易决策
-        
-        注意：第0个Bar不会调用此方法，因为这是策略启动的初始状态
-        从第1个Bar开始，每次都是先next()再next_open()
         """
         self.bar_count += 1
         current_time = self.datas[0].datetime.datetime(0)
         open_price = self.dataopen[0]
         
         self.log(f'🔓 [next_open] Bar #{self.bar_count} | 开盘价: {open_price:.2f}')
-        self.log(f'   ⚠️  注意：这是在第{self.bar_count}个Bar的开盘时刻执行')
         
-        # 简单示例：在第二个Bar买入（bar_count=2对应第3个数据点）
+        # 简单示例：在第二个Bar买入
         if self.bar_count == 2 and not self.position:
             self.buy(size=100)
             self.log(f'✅ [next_open] 买入 100 股 @ {open_price:.2f}')
@@ -42,12 +38,7 @@ class SimpleStrategy(bt.Strategy):
     def next(self):
         """
         每个Bar都会调用
-        
-        在 cheat_on_open=True 模式下的执行顺序：
-        - 第0个Bar：只调用 next()（初始化）
-        - 第1个Bar及之后：先 next() 再 next_open()
-        
-        职责：处理上一个Bar的收盘数据，为下一个Bar的开盘做准备
+        在 cheat_on_open=True 模式下，先于 next_open() 执行
         """
         current_time = self.datas[0].datetime.datetime(0)
         close_price = self.dataclose[0]
@@ -59,10 +50,6 @@ class SimpleStrategy(bt.Strategy):
         if self.position:
             self.log(f'   💼 持仓: {self.position.size} 股')
         self.log(f'   💰 现金: {self.broker.getcash():.2f}')
-        
-        # 特殊标记：如果是第0个Bar
-        if self.bar_count == 0:
-            self.log(f'   🔔 这是第0个Bar（初始Bar），不会调用next_open()')
 
 
 def create_sample_data():
@@ -115,16 +102,11 @@ def main():
     initial_cash = 100000.0
     cerebro.broker.setcash(initial_cash)
     
-    # 6. 打印初始状态和执行顺序说明
+    # 6. 打印初始状态
     print(f'💰 初始资金: {initial_cash:,.2f} 元')
     print(f'📊 数据条数: {len(df)} 条')
     print("\n" + "="*70)
-    print("📌 执行顺序说明：")
-    print("   • 第0个Bar：只调用 next()（策略初始化）")
-    print("   • 第1个Bar及之后：先 next() → 再 next_open()")
-    print("   • cheat_on_open=True 让策略能在开盘时'提前'交易")
-    print("="*70)
-    print("\n开始回测...\n")
+    print("开始回测...\n")
     print("="*70 + "\n")
     
     # 7. 运行回测
@@ -139,17 +121,6 @@ def main():
     print(f'💵 最终资产: {final_value:,.2f} 元')
     print(f'💰 最终现金: {final_cash:,.2f} 元')
     print(f'📈 收益率: {(final_value - initial_cash) / initial_cash * 100:.2f}%')
-    print("="*70)
-    
-    # 9. 总结执行顺序
-    print("\n" + "="*70)
-    print("📋 执行顺序总结：")
-    print("="*70)
-    print("Bar #0: next() 只有           ← 初始Bar，无历史数据可'作弊'")
-    print("Bar #1: next() → next_open()  ← 有了Bar#0的收盘价，可以开盘交易")
-    print("Bar #2: next() → next_open()  ← 正常流程")
-    print("Bar #3: next() → next_open()  ← 正常流程")
-    print("Bar #4: next() → next_open()  ← 正常流程")
     print("="*70)
 
 

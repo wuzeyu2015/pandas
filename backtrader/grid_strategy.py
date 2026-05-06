@@ -182,11 +182,11 @@ class GridStrategy(bt.Strategy):
         
         self.order = None
 
-    def notify_trade(self, trade):
-        """交易完成通知"""
-        if not trade.isclosed:
-            return
-        self.log(f'💰 交易利润: 毛利润 {trade.pnl:.2f}, 净利润 {trade.pnlcomm:.2f}', doprint=True)
+    # def notify_trade(self, trade):
+    #     """交易完成通知"""
+    #     if not trade.isclosed:
+    #         return
+    #     self.log(f'💰 交易利润: 毛利润 {trade.pnl:.2f}, 净利润 {trade.pnlcomm:.2f}', doprint=True)
 
     
     def next(self):
@@ -280,6 +280,10 @@ class GridStrategy(bt.Strategy):
             return
         price = self.dataclose[0]
         current_dt = self.datas[0].datetime.datetime(0)
+        
+        # ✅ 引入模拟持仓变量，跟踪当前Bar内的累计持仓变化
+        simulated_position = self.position.size
+        
         trades_executed = 0
         max_trades_per_bar = 100  # 防止死循环
         
@@ -290,15 +294,19 @@ class GridStrategy(bt.Strategy):
             
             # 检查买入条件
             if price <= buy_trigger:
-                if self._execute_buy(price, buy_trigger, current_dt, trades_executed):
+                if self._execute_buy(price, buy_trigger, current_dt, trades_executed, simulated_position):
                     trades_executed += 1
+                    # ✅ 更新模拟持仓
+                    simulated_position += self.params.trade_shares
                 else:
                     break
             
             # 检查卖出条件
             elif price >= sell_trigger:
-                if self._execute_sell(price, sell_trigger, current_dt, trades_executed):
+                if self._execute_sell(price, sell_trigger, current_dt, trades_executed, simulated_position):
                     trades_executed += 1
+                    # ✅ 更新模拟持仓
+                    simulated_position -= self.params.trade_shares
                 else:
                     break
             
@@ -311,14 +319,18 @@ class GridStrategy(bt.Strategy):
             session_type = "开盘" if is_open_session else "收盘"
             self.log(f'🔄 {session_type}共执行 {trades_executed} 次交易，基准价追平至 {self.base_price:.3f}', doprint=True)
     
-    def _execute_buy(self, current_price, buy_trigger, current_dt, trade_index):
+    def _execute_buy(self, current_price, buy_trigger, current_dt, trade_index, simulated_position):
         """
         执行买入操作
+        
+        Args:
+            simulated_position: 模拟持仓（当前Bar内累计后的持仓）
         
         Returns:
             bool: True表示成功执行，False表示无法执行
         """
-        current_position = self.position.size
+        # ✅ 使用模拟持仓进行仓位检查
+        current_position = simulated_position
         
         # 检查持仓上限
         if current_position >= self.params.position_max:
@@ -348,25 +360,27 @@ class GridStrategy(bt.Strategy):
         
         return True
     
-    def _execute_sell(self, current_price, sell_trigger, current_dt, trade_index):
+    def _execute_sell(self, current_price, sell_trigger, current_dt, trade_index, simulated_position):
         """
         执行卖出操作
+        
+        Args:
+            simulated_position: 模拟持仓（当前Bar内累计后的持仓）
         
         Returns:
             bool: True表示成功执行，False表示无法执行
         """
-        current_position = self.position.size
+        # ✅ 使用模拟持仓进行仓位检查
+        current_position = simulated_position
         
         # 检查持仓充足性
         if current_position < self.params.trade_shares:
-            if trade_index == 0:
-                self.log(f'⚠️  持仓不足 ({current_position}股 < {self.params.trade_shares}股)，无法卖出', doprint=True)
+            self.log(f'⚠️  持仓不足 ({current_position}股 < {self.params.trade_shares}股)，无法卖出', doprint=True)
             return False
         
         # 检查最小持仓限制
         if current_position - self.params.trade_shares < self.params.position_min:
-            if trade_index == 0:
-                self.log(f'⚠️  卖出后将低于最小持仓限制', doprint=True)
+            self.log(f'⚠️  卖出后将低于最小持仓限制', doprint=True)
             return False
         
         # 提交卖出订单
@@ -411,7 +425,9 @@ def run_backtest(
     end,
     frequency='1m',
     initial_cash=100000,
-    commission=0.0005,
+    commission=0.00005,
+    initial_position=12000,        # ✅ 新增：初始持仓数量（股）
+    initial_position_price=None, # ✅ 新增：初始持仓成本价（可选，默认使用首个Bar开盘价）
     **strategy_kwargs
 ):
     """
@@ -425,6 +441,8 @@ def run_backtest(
         frequency: 数据频率，默认'1m'（1分钟线）
         initial_cash: 初始资金，默认10万
         commission: 佣金费率，默认0.05%
+        initial_position: 初始持仓数量（股），默认0
+        initial_position_price: 初始持仓成本价，默认None（使用首个Bar开盘价）
         **strategy_kwargs: 策略参数（根据具体策略传入）
     
     Returns:
@@ -432,12 +450,26 @@ def run_backtest(
         cerebro: Cerebro引擎实例
     
     Example:
-        # 网格策略
+        # 网格策略（无初始持仓）
         run_backtest(
             GridStrategy,
             '159952',
             '20251023',
             '20251119',
+            grid_size=0.05,
+            trade_shares=5000,
+            position_max=150000,
+            position_min=0
+        )
+        
+        # 网格策略（已有10000股初始持仓）
+        run_backtest(
+            GridStrategy,
+            '159952',
+            '20251023',
+            '20251119',
+            initial_position=10000,
+            initial_position_price=1.5,  # 成本价1.5元
             grid_size=0.05,
             trade_shares=5000,
             position_max=150000,
@@ -484,14 +516,49 @@ def run_backtest(
         # 4. 添加策略（传入策略参数）
         cerebro.addstrategy(strategy_class, **strategy_kwargs)
         
-        # 5. 设置初始资金
-        cerebro.broker.setcash(initial_cash)
+        # 5. 设置初始资金和持仓
+        if initial_position > 0:
+            # ✅ 计算初始持仓需要的资金
+            init_price = initial_position_price if initial_position_price is not None else data['open'].iloc[0]
+            position_value = initial_position * init_price
+            
+            if position_value > initial_cash:
+                print(f"⚠️  警告: 初始资金不足以购买 {initial_position} 股")
+                print(f"   需要: {position_value:,.2f} 元, 可用: {initial_cash:,.2f} 元")
+                return None, None
+            
+            # 扣除持仓占用的资金，设置剩余现金
+            remaining_cash = initial_cash - position_value
+            cerebro.broker.setcash(remaining_cash)
+            
+            # ✅ 通过直接操作 broker 建立初始持仓（更可靠的方式）
+            # 创建一个买入订单对象
+            order = bt.Order.Buy()
+            order.size = initial_position
+            order.price = init_price
+            order.exectype = bt.Order.Limit
+            
+            # 提交订单到 broker
+            cerebro.broker.submit_order(order)
+            
+            print(f'📊 初始持仓: {initial_position} 股 @ {init_price:.3f} 元 (价值 {position_value:,.2f} 元)')
+            print(f'💰 剩余现金: {remaining_cash:,.2f} 元')
+        else:
+            # 无初始持仓，直接设置全部现金
+            cerebro.broker.setcash(initial_cash)
         
         # 6. 设置佣金
         cerebro.broker.setcommission(commission=commission)
         
         # 7. 打印初始状态
-        print(f'💼 初始总资产: {cerebro.broker.getvalue():,.2f} 元\n')
+        initial_value = cerebro.broker.getvalue()
+        initial_cash_remaining = cerebro.broker.getcash()
+        initial_position_size = cerebro.broker.getposition(data_feed).size if initial_position > 0 else 0
+        
+        print(f'💼 初始总资产: {initial_value:,.2f} 元')
+        if initial_position > 0:
+            print(f'📊 初始持仓: {initial_position_size} 股')
+        print(f'💰 可用现金: {initial_cash_remaining:,.2f} 元\n')
         
         # 8. 运行回测
         print("⏳ 回测进行中...\n")
@@ -530,15 +597,15 @@ if __name__ == '__main__':
         strategy_class=GridStrategy,  # 传入策略类
         code='159952',
         start='20251023',
-        end='20251119',
-        frequency='15m',
-        initial_cash=24000,
+        end='20251223',
+        frequency='1m',
+        initial_cash=36000,
         
         # 网格策略专属参数
-        grid_size=0.05,
-        trade_shares=5000,
-        position_max=150000,
-        position_min=0
+        grid_size=0.013,
+        trade_shares=3000,
+        position_max=18000,
+        position_min=6000
     )
     
     # === 示例2：如何添加新策略 ===

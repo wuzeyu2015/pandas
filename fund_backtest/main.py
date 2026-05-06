@@ -48,7 +48,7 @@ def main():
                 code = f"{code}.XSHE"  # 深圳交易所
         else:
             code = code
-        df =jqdatasdk.get_price(code, start_date= '20251023', end_date='20251119',
+        df =jqdatasdk.get_price(code, start_date= '20251023', end_date='20251223',
                                 fq='post', frequency='1m',
                                 fields=['open','close','low','high', 'volume'],
                                 round=False)
